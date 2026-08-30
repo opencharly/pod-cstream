@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.1715
+        version: 2026.242.1920
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -175,22 +175,23 @@ cstream:
               context:
                 - runtime
               exit_status: 0
+              # `eventually:` + `retry_interval:` are charly's OWN retry modifiers --
+              # the same pair the cross-deployment-probing reference uses for cdp
+              # steps. This step previously hand-rolled the identical semantics in
+              # shell (a `for … seq` loop around the socat call, matching on the
+              # rate-limited reply). That was a reimplementation of an existing
+              # mechanism: R3.
+              #
+              # The retry is needed because the control socket rate-limits APPLIED
+              # resizes to 2/s, so a resize arriving too soon after the previous one
+              # is refused. Retrying is correct here and the bound keeps a genuinely
+              # dead socket failing rather than hanging.
+              eventually: 15s
+              retry_interval: 1s
               command:
                   in_container: true
                   command: |
-                      # The 500ms rate limit is on APPLIED resizes; the preceding
-                      # observation step has already spent longer than that. A bounded
-                      # retry is still used rather than a sleep, so this cannot become
-                      # a flake if step timing changes.
-                      for _ in $(seq 20); do
-                          r=$(printf 'resize 640 480\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock)
-                          case "$r" in
-                              *"OK resize 640x480"*) echo "$r"; exit 0 ;;
-                              *rate-limited*) sleep 0.2 ;;
-                              *) echo "$r"; exit 1 ;;
-                          esac
-                      done
-                      echo "RESIZE-FAIL: still rate-limited after 4s"; exit 1
+                      printf 'resize 640 480\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock
               stdout:
                 - contains: "OK resize 640x480"
             - check: WP4 the compositor followed the second resize down
