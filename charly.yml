@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.2010
+        version: 2026.242.2021
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -119,6 +119,15 @@ cstream:
             # one. A target that enabled itself at boot would re-create, one level
             # up, the deploy-time start this whole change removes.
             - run: install the cstream session target
+              # RUNTIME, not build. The `unit:` verb has only a provision act --
+              # no build-context emit -- and omitting this fails BOTH venues in
+              # different ways: the container venue refuses to render the
+              # Containerfile at all ("returned an empty OpEmit fragment"), while
+              # the machine venue silently installs NOTHING and still exits 0.
+              # Measured: deploy-add PASS with zero daemon-reload and zero mention
+              # of the unit, caught only by the bed's LoadState assertion.
+              context:
+                - runtime
               unit:
                 unit: cstream-session.target
                 scope: system
