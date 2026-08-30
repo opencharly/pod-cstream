@@ -48,7 +48,7 @@ cstream:
                 cd /tmp
                 git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
                 cd src
-                git checkout -q 16faf34c4645a0033ba8d9d6d1e1b81b8095f4dc
+                git checkout -q 3898e9a8a3e6bfa114cde366f87ac349c259a436
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
