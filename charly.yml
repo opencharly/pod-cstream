@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.0700
+        version: 2026.242.0930
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -72,6 +72,11 @@ cstream:
               to: /usr/local/bin/encoder-probe
               mode: "0755"
               run_as: root
+            - run: stage the consumer-side frame probe
+              copy: etc/webrtc-frame-probe
+              to: /usr/local/bin/cstream-frame-probe
+              mode: "0755"
+              run_as: root
             - run: stage the login probe the bed drives
               copy: etc/login-probe
               to: /usr/local/bin/cstream-login-probe
@@ -131,7 +136,7 @@ cstream:
             - check: the streaming probes are installed
               id: cstream-probes-installed
               exit_status: 0
-              command: test -x /usr/local/bin/stream-probe && test -x /usr/local/bin/encoder-probe && test -x /usr/local/bin/cstream-login-probe && echo PROBES-OK
+              command: test -x /usr/local/bin/stream-probe && test -x /usr/local/bin/encoder-probe && test -x /usr/local/bin/cstream-login-probe && test -x /usr/local/bin/cstream-frame-probe && echo PROBES-OK
               stdout:
                 - contains: PROBES-OK
         service:

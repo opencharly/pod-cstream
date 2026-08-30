@@ -1,0 +1,41 @@
+#!/bin/bash
+# Pull a frame back OUT of the stream, over WebRTC, as a real consumer would.
+#
+# Every gate up to now measures the PRODUCING half: the graph reaches PLAYING, the
+# encoder opens, the sink registers as a producer. None of them proves a consumer
+# can negotiate and receive decodable video -- which is the whole product claim,
+# and the reason the architecture wants a `cstream: frame` verb distinct from
+# `wl: screenshot` (a compositor screenshot cannot fail on an encoding or
+# transport defect; this can).
+#
+# webrtcsrc is the consumer counterpart of webrtcsink from the same plugin, so
+# this negotiates through the streamer's own in-process signalling server.
+set -u
+OUT=${1:-/tmp/cstream-consumed.jpg}
+PORT=${CSTREAM_SIGNALLING_PORT_OVERRIDE:-8443}
+rm -f "$OUT"
+
+gst-inspect-1.0 webrtcsrc >/dev/null 2>&1 || { echo "NO-WEBRTCSRC (gst-plugin-rswebrtc lacks the consumer element)"; exit 1; }
+
+# num-buffers on the sink side: take a handful of frames and stop, so the probe
+# terminates on success instead of streaming forever.
+# connect-to-first-producer defaults to FALSE: without it webrtcsrc connects to
+# the signalling server and then waits forever for a peer-id nobody supplies, so
+# the probe times out with no error and no frame -- measured, and indistinguishable
+# from a dead stream unless you read the signalling log and notice the consumer
+# registered with an EMPTY role list.
+timeout 60 gst-launch-1.0 -q \
+    webrtcsrc connect-to-first-producer=true signaller::uri="ws://127.0.0.1:$PORT" \
+    ! queue ! decodebin ! videoconvert ! jpegenc snapshot=true \
+    ! filesink location="$OUT" 2>&1 | tail -5
+
+if [ ! -s "$OUT" ]; then
+    echo "NO-FRAME-RECEIVED (negotiation or transport failed)"
+    exit 1
+fi
+BYTES=$(stat -c %s "$OUT")
+echo "CONSUMED-FRAME bytes=$BYTES"
+# A JPEG of a uniform field compresses to almost nothing, so a size floor is a
+# cheap content guard: a black or placeholder frame does not clear it.
+[ "$BYTES" -ge 3000 ] || { echo "FRAME-TOO-SMALL bytes=$BYTES -- likely uniform"; exit 1; }
+echo "CONSUMED-FRAME-OK"
