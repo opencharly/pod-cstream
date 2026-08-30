@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.1030
+        version: 2026.242.1410
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -41,6 +41,12 @@ cstream:
             # NOT gst-plugin-webrtchttp, which is the WHIP/WHEP pair and has no
             # webrtcsink at all. 0.15.3 is the pinned series.
             - gst-plugin-rswebrtc
+            # webrtcbin lives here, and webrtcsink CANNOT WORK WITHOUT IT: the
+            # rswebrtc elements construct a webrtcbin per session internally, so
+            # without this package the sink registers, negotiates a session, then
+            # fails to build its pipeline with `Failed to make element webrtcbin`
+            # -- a WARN, not an error, so the stream silently carries no media.
+            - gst-plugins-bad
         plan:
             - run: build the gateway and the session leader from the pinned streamer
               command: |
@@ -107,6 +113,20 @@ cstream:
                 gst-inspect-1.0 webrtcsink >/dev/null 2>&1 && echo WEBRTCSINK-OK
               stdout:
                 - contains: WEBRTCSINK-OK
+            - check: webrtcbin is present -- webrtcsink builds one PER SESSION and is inert without it
+              id: cstream-webrtcbin-registered
+              exit_status: 0
+              command: |
+                # webrtcsink registering proves NOTHING about whether it can serve a
+                # session: it makes a webrtcbin per consumer at session time, and when
+                # that element is missing the failure is a WARN
+                # (`SessionPipelineError ... Failed to make element webrtcbin`), the
+                # offer is never sent, and the consumer waits forever with no ICE or
+                # DTLS error to point at. Registration is not capability -- the same
+                # trap the VA encoder gate already covers by opening the encoder.
+                gst-inspect-1.0 webrtcbin >/dev/null 2>&1 && echo WEBRTCBIN-OK
+              stdout:
+                - contains: WEBRTCBIN-OK
             - check: "the streamer has its OWN PAM service, not a borrowed login stack"
               id: cstream-pam-service
               exit_status: 0
