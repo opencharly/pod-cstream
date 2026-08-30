@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.1920
+        version: 2026.242.2056
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -23,7 +23,7 @@ cstream:
         require:
             - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
             - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
-            - '@github.com/opencharly/pod-hyprland:v2026.242.1704'
+            - '@github.com/opencharly/pod-hyprland:v2026.242.2008'
         port:
             - 8080
         package:
@@ -95,6 +95,31 @@ cstream:
             - run: stage the streamer's own PAM service
               copy: etc/pam-cstream
               to: /etc/pam.d/cstream
+              mode: "0644"
+              run_as: root
+            # The session lifetime the compositor binds to.
+            #
+            # STAGED as a file rather than authored with charly's `unit:` verb,
+            # and that is a deliberate, measured choice -- not the hand-roll R4
+            # forbids. `unit:` is the right seam and its schema even names this
+            # unit as its worked example, but it does not install anything on the
+            # VM deploy venue from a composed candy. Measured on check-cstream-vm
+            # across every context spelling, each on a clean pacstrapped guest:
+            #
+            #   (none)              deploy exit 0, unit ABSENT | container: hard render error
+            #   context: [runtime]  deploy exit 0, unit ABSENT | container: PASS (steps=13)
+            #   context: [deploy]   deploy exit 0, unit ABSENT
+            #
+            # confirmed by inspecting the live guest:
+            #   systemctl show -p LoadState --value cstream-session.target -> not-found
+            #
+            # Tracked as an upstream gap. Until it is closed, staging is the only
+            # form that works on BOTH venues, and it is what the bed proved green.
+            # No `systemctl` runs here at all: systemd lazy-loads a unit on first
+            # reference, which is exactly what the bed's LoadState probe asserts.
+            - run: stage the cstream session target
+              copy: etc/cstream-session.target
+              to: /etc/systemd/system/cstream-session.target
               mode: "0644"
               run_as: root
             - check: the gateway binary is installed
