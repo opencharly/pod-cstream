@@ -1,0 +1,20 @@
+# /etc/pam.d/cstream — the streamer's own PAM service.
+#
+# A dedicated stack, not `login`, and not as a shortcut: `login` carries modules
+# that are hostile to a container session and fail for reasons unrelated to the
+# credential.
+#
+#   pam_loginuid   writes /proc/self/loginuid, which needs CAP_AUDIT_CONTROL
+#   pam_securetty  gates on a tty this session does not have
+#   pam_selinux    no-ops or errors depending on the host's policy
+#
+# Borrowing `login` therefore makes a correct password fail with
+# "Authentication service cannot retrieve authentication info", which names the
+# wrong cause and sends the reader looking at the credential.
+#
+# What remains is exactly what the streamer needs and nothing else.
+
+auth       required   pam_unix.so
+account    required   pam_unix.so
+session    required   pam_unix.so
+session    optional   pam_systemd.so

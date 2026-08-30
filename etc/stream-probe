@@ -1,0 +1,100 @@
+#!/bin/bash
+# stream-probe — prove the LIVE pipeline carries changing compositor content.
+#
+# Frames come from the tap on the RUNNING streamer pipeline (/tmp/cstream-frames),
+# not from a second gst-launch and not from grim:
+#   * a second pipeline cannot work -- the render node is held by the streamer, and
+#     a competing waylanddisplaysrc negotiates "Supported DMA formats: []"
+#   * grim reads the compositor's framebuffer, which says nothing about whether the
+#     encoder and transport carry those pixels
+#
+# The discriminator is a BEFORE/AFTER pair around a real client window. A pipeline
+# that is dead, frozen, or serving a placeholder yields IDENTICAL frames and fails
+# here -- which an "is not uniform" check cannot catch, since a wallpaper is not
+# uniform.
+set -e
+
+# charly's command: check does not surface stdout on failure, so the probe also
+# writes a transcript. Without it the only signal is "exit=1" and the cause has to
+# be guessed from outside the bed -- which is how three wrong hypotheses got
+# chased here already.
+exec > >(tee -a /tmp/stream-probe.log) 2>&1
+echo "=== probe run $(date -u +%H:%M:%S) ==="
+
+FRAMES=/tmp/cstream-frames
+
+# The SERVICES' runtime dir, not the one charly injects. charly's in_container
+# exec sets XDG_RUNTIME_DIR=/tmp/xdg-runtime, so defaulting only when unset let
+# that override win and the probe looked for the compositor in the wrong place --
+# reporting "no Hyprland instance" against a compositor that was running fine.
+# The value is pinned to what the service units declare.
+CSTREAM_RT=/tmp/cstream-rt
+export XDG_RUNTIME_DIR="$CSTREAM_RT"
+
+# Self-diagnosis. This probe passed under `podman exec` (uid 1000) while failing
+# under charly's in_container exec, so the failure has to NAME its context rather
+# than leave the difference to be guessed at from outside.
+echo "STREAM-CTX: $(id -un 2>/dev/null) uid=$(id -u 2>/dev/null) XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+echo "STREAM-CTX: frames-dir readable=$([ -r "$FRAMES" ] && echo yes || echo NO) runtime-dir readable=$([ -r "$XDG_RUNTIME_DIR" ] && echo yes || echo NO)"
+echo "STREAM-CTX: hyprctl=$(command -v hyprctl >/dev/null 2>&1 && echo present || echo MISSING) foot=$(command -v foot >/dev/null 2>&1 && echo present || echo MISSING)"
+
+newest() { ls -t "$FRAMES"/*.jpg 2>/dev/null | head -1; }
+
+wait_for_frame() {
+    for _ in $(seq 1 60); do
+        f=$(newest); [ -n "$f" ] && [ -s "$f" ] && { echo "$f"; return 0; }
+        sleep 1
+    done
+    return 1
+}
+
+f=$(wait_for_frame) || { echo "STREAM-FAIL: the streamer pipeline never produced a frame"; exit 1; }
+A=$(sha256sum "$f" | cut -d' ' -f1)
+echo "STREAM-FRAME-A: $(stat -c%s "$f") bytes sha=${A:0:16}"
+
+HYPR_SIG=$(ls "$CSTREAM_RT/hypr" 2>/dev/null | head -1)
+[ -n "$HYPR_SIG" ] || { echo "STREAM-FAIL: no Hyprland instance -- nothing to stream"; exit 1; }
+export HYPRLAND_INSTANCE_SIGNATURE="$HYPR_SIG"
+
+echo "STREAM-STEP: mapping a client window on the nested compositor"
+# Count clients rather than matching a title: foot REWRITES --title to the shell
+# prompt once it starts (measured: the window came up as "@host:~"), so a title
+# match reports "never mapped" for a window that is on screen.
+# grep -c prints 0 AND exits 1 when there is no match, so `|| echo 0` emits TWO
+# lines and every later [ ] comparison dies with "integer expected". Count without
+# relying on grep's exit status.
+clients() { hyprctl -j clients 2>/dev/null | grep -c '"address"' | head -1; }
+before=$(clients)
+# NOT `hyprctl dispatch exec`: Hyprland 0.55+ replaced the legacy string
+# dispatchers with Lua, so `dispatch exec foot` is rejected and the window never
+# appears -- measured here, while a direct launch on the nested socket maps fine.
+# The nested compositor's own socket, not the parent's.
+NESTED=$(hyprctl -j instances 2>/dev/null | grep -o '"wl_socket": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+[ -n "$NESTED" ] || { echo "STREAM-FAIL: could not resolve the nested compositor socket"; exit 1; }
+WAYLAND_DISPLAY="$NESTED" foot >/dev/null 2>&1 &
+mapped=0
+for _ in $(seq 1 60); do
+    [ "$(clients)" -gt "$before" ] && { mapped=1; break; }
+    sleep 0.5
+done
+[ "$mapped" -eq 1 ] || { echo "STREAM-FAIL: no client window mapped (clients stayed at $before) -- nothing to stream"; exit 1; }
+echo "STREAM-CLIENT-MAPPED: yes (clients $before -> $(clients))"
+
+# Wait for a frame captured strictly AFTER the window mapped.
+B=""; Bf=""
+for _ in $(seq 1 60); do
+    g=$(newest)
+    if [ -n "$g" ] && [ "$g" != "$f" ]; then
+        h=$(sha256sum "$g" | cut -d' ' -f1)
+        if [ "$h" != "$A" ]; then B="$h"; Bf="$g"; break; fi
+    fi
+    sleep 1
+done
+
+if [ -z "$B" ]; then
+    echo "STREAM-FAIL: no frame differing from A after the window mapped --"
+    echo "STREAM-FAIL: the pipeline is not carrying live compositor content"
+    exit 1
+fi
+echo "STREAM-FRAME-B: $(stat -c%s "$Bf") bytes sha=${B:0:16}"
+echo "STREAM-LIVE-OK: pipeline output changed when the desktop changed"

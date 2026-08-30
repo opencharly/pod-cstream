@@ -1,0 +1,135 @@
+version: 2026.240.1943
+cstream:
+    candy:
+        version: 2026.242.0010
+        description: |
+            The cstream transport spine: the Wayland parent that IS the streamer, the
+            browser-facing gateway, the PAM login broker, and the gates that prove
+            the stack is actually STREAMING rather than merely started.
+
+            Three of those gates exist because the obvious checks are not evidence.
+            A service check proves a process is up; measured, charly's own service:
+            verb even reports PASS for a supervisord program parked in FATAL
+            (opencharly/charly#456). A grim screenshot proves the compositor draws,
+            but says nothing about whether the encoder and transport carry those
+            pixels. And "the frame is not uniform" passes on a wallpaper, so a
+            frozen pipeline serving one static frame forever satisfies it.
+
+            So the streaming gate compares frames pulled THROUGH the pipeline before
+            and after a real client window maps: a dead, frozen or placeholder
+            pipeline yields identical frames and fails. The encoder gate fails when a
+            VA-capable node is present but hardware encode is not actually producing
+            H.264 -- the spec's named silent fallback to CPU.
+        require:
+            - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
+            - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
+            - '@github.com/opencharly/pod-hyprland:v2026.241.1545'
+        port:
+            - 8080
+        package:
+            - go
+            - rust
+            - git
+            - pam
+            - shadow
+            - socat
+            - foot
+            - ttf-dejavu
+            - gst-plugins-good
+        plan:
+            - run: build the gateway and the session leader from the pinned streamer
+              command: |
+                set -e
+                cd /tmp
+                git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
+                cd src
+                git checkout -q 9c13ebf89f1c6c77980e4a014516893aeeed12ec
+                CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
+                cargo build --release -p cstream-leader --bin cstream-leader
+                install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
+                cd /
+                rm -rf /tmp/src /root/go /root/.cache/go-build /root/.cargo/registry /root/.cargo/git
+              run_as: root
+            - run: stage the Wayland parent
+              copy: etc/cstream-parent
+              to: /usr/local/bin/cstream-parent
+              mode: "0755"
+              run_as: root
+            - run: stage the streaming gate probes
+              copy: etc/stream-probe
+              to: /usr/local/bin/stream-probe
+              mode: "0755"
+              run_as: root
+            - run: stage the encoder probe
+              copy: etc/encoder-probe
+              to: /usr/local/bin/encoder-probe
+              mode: "0755"
+              run_as: root
+            - run: stage the login probe the bed drives
+              copy: etc/login-probe
+              to: /usr/local/bin/cstream-login-probe
+              mode: "0755"
+              run_as: root
+            - run: stage the streamer's own PAM service
+              copy: etc/pam-cstream
+              to: /etc/pam.d/cstream
+              mode: "0644"
+              run_as: root
+            - check: the gateway binary is installed
+              id: cstream-gateway-installed
+              file:
+                file: /usr/local/bin/cstream-gateway
+                exists: true
+            - check: the session leader is installed
+              id: cstream-leader-installed
+              file:
+                file: /usr/local/bin/cstream-leader
+                exists: true
+            - check: "the streamer has its OWN PAM service, not a borrowed login stack"
+              id: cstream-pam-service
+              exit_status: 0
+              command: |
+                # Borrowing /etc/pam.d/login fails in a container for reasons unrelated
+                # to the credential (pam_loginuid needs CAP_AUDIT_CONTROL, pam_securetty
+                # gates on a tty this session has none of), and reports
+                # "cannot retrieve authentication info" -- naming the wrong cause.
+                test -f /etc/pam.d/cstream || exit 1
+                # Assert against the MODULE LINES only. Grepping the whole file for
+                # the modules that must be absent matches this stack's own comment
+                # explaining why they are absent, so the check fails on a correct
+                # file -- measured, not hypothetical.
+                rules=$(grep -v '^[[:space:]]*#' /etc/pam.d/cstream)
+                echo "$rules" | grep -qE '^auth[[:space:]]+.*pam_unix\.so' || exit 1
+                echo "$rules" | grep -qE '^account[[:space:]]+.*pam_unix\.so' || exit 1
+                echo "$rules" | grep -qE '^session[[:space:]]+.*pam_unix\.so' || exit 1
+                if echo "$rules" | grep -qE 'pam_loginuid|pam_securetty'; then exit 1; fi
+                echo PAM-STACK-OK
+              stdout:
+                - contains: PAM-STACK-OK
+            - check: the streaming probes are installed
+              id: cstream-probes-installed
+              exit_status: 0
+              command: test -x /usr/local/bin/stream-probe && test -x /usr/local/bin/encoder-probe && test -x /usr/local/bin/cstream-login-probe && echo PROBES-OK
+              stdout:
+                - contains: PROBES-OK
+        service:
+            - name: cstream-parent
+              exec: /usr/local/bin/cstream-parent
+              env:
+                XDG_RUNTIME_DIR: /tmp/cstream-rt
+              restart: always
+              priority: 10
+              start_sec: 2
+              enable: true
+              scope: system
+            - name: cstream-gateway
+              exec: /usr/local/bin/cstream-gateway --addr :8080
+              env:
+                XDG_RUNTIME_DIR: /tmp/cstream-rt
+                WAYLAND_DISPLAY: wayland-1
+                CSTREAM_RENDER_NODE: /dev/dri/renderD128
+              restart: always
+              priority: 18
+              start_sec: 2
+              enable: true
+              scope: system

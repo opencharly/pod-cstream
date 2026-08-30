@@ -1,0 +1,37 @@
+#!/bin/bash
+# encoder-probe — assert the HARDWARE encoder is the one actually used.
+#
+# `encode: auto` falling back to software is the spec's named silent failure: the
+# stream still works, on the CPU, and nothing says so. This fails when a VA-capable
+# node is present but the software branch was selected.
+set -e
+if [ -z "$CSTREAM_RENDER_NODE" ]; then CSTREAM_RENDER_NODE=/dev/dri/renderD128; fi
+
+if [ ! -e "$CSTREAM_RENDER_NODE" ]; then
+    echo "ENCODER-FAIL: no render node at $CSTREAM_RENDER_NODE"
+    exit 1
+fi
+
+if ! gst-inspect-1.0 vah264enc >/dev/null 2>&1; then
+    echo "ENCODER-FAIL: vah264enc absent though a render node exists -- the VA plugin is missing"
+    exit 1
+fi
+
+# Encode real frames through the VA encoder. A node that advertises the element but
+# cannot actually encode fails HERE rather than silently degrading at stream time.
+rm -f /tmp/enc.h264
+timeout 60 gst-launch-1.0 -q \
+    waylanddisplaysrc render-node="$CSTREAM_RENDER_NODE" num-buffers=30 \
+    ! "video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1" \
+    ! vapostproc ! vah264enc ! h264parse ! filesink location=/tmp/enc.h264 >/dev/null 2>&1 || true
+
+if [ ! -s /tmp/enc.h264 ]; then
+    echo "ENCODER-FAIL: vah264enc produced no output -- hardware encode is not working"
+    exit 1
+fi
+sz=$(stat -c%s /tmp/enc.h264)
+if [ "$sz" -lt 1000 ]; then
+    echo "ENCODER-FAIL: encoded stream is only ${sz} bytes -- not a real encode"
+    exit 1
+fi
+echo "ENCODER-VA-OK: vah264enc produced ${sz} bytes of H.264"

@@ -1,0 +1,36 @@
+#!/bin/sh
+# The Wayland PARENT for the nested compositor.
+#
+# In production this is cstream-streamer, which embeds the same element. Here it is
+# the element driven directly, so the nesting spine can be gated before the streamer
+# owns a pipeline. Either way the parent is a SERVICE, not something a check starts.
+set -e
+if [ -z "$XDG_RUNTIME_DIR" ]; then XDG_RUNTIME_DIR=/tmp/cstream-rt; fi
+export XDG_RUNTIME_DIR
+# mkdir -p is safe on an existing dir; chmod is NOT -- chmod on a pre-existing
+# /tmp fails with EPERM and, under set -e, kills the launcher before the real
+# work starts. Only tighten a directory we just created.
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+fi
+if [ -z "$CSTREAM_RENDER_NODE" ]; then CSTREAM_RENDER_NODE=/dev/dri/renderD128; fi
+# No software fallback: GWD creates zwp_linux_dmabuf_v1 only on the hardware path.
+if [ ! -e "$CSTREAM_RENDER_NODE" ]; then
+    echo "gwd-parent: no DRM render node at $CSTREAM_RENDER_NODE" >&2
+    exit 1
+fi
+# The pipeline TEES its output to a rolling frame directory. That tap is what the
+# streaming gate reads. A second gst-launch cannot be used for that: the render
+# node is already held by this process, and a competing waylanddisplaysrc
+# negotiates "Supported DMA formats: []" and produces nothing -- measured, and the
+# same signature the spec records for a node that cannot advertise modifiers.
+mkdir -p /tmp/cstream-frames
+rm -f /tmp/cstream-frames/*.jpg
+
+exec gst-launch-1.0 -q waylanddisplaysrc render-node="$CSTREAM_RENDER_NODE" \
+    ! "video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1" \
+    ! vapostproc ! tee name=t \
+    t. ! queue ! fakesink \
+    t. ! queue ! videorate ! "video/x-raw,framerate=1/1" ! videoconvert \
+       ! jpegenc ! multifilesink location=/tmp/cstream-frames/f%05d.jpg max-files=8
