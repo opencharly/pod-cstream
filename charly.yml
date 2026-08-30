@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.1410
+        version: 2026.242.1450
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -83,6 +83,15 @@ cstream:
               to: /usr/local/bin/cstream-login-probe
               mode: "0755"
               run_as: root
+            # The CONSUMER-side probe. stream-probe reads the producer's own tap
+            # and wl: screenshot reads the compositor, so neither can fail on an
+            # encoding or transport defect -- which is exactly the class that hid
+            # the missing webrtcbin while every producer-side check passed.
+            - run: stage the frame probe that pulls back through the WebRTC track
+              copy: etc/cstream-frame-probe
+              to: /usr/local/bin/cstream-frame-probe
+              mode: "0755"
+              run_as: root
             - run: stage the streamer's own PAM service
               copy: etc/pam-cstream
               to: /etc/pam.d/cstream
@@ -151,7 +160,7 @@ cstream:
             - check: the streaming probes are installed
               id: cstream-probes-installed
               exit_status: 0
-              command: test -x /usr/local/bin/stream-probe && test -x /usr/local/bin/encoder-probe && test -x /usr/local/bin/cstream-login-probe && echo PROBES-OK
+              command: test -x /usr/local/bin/stream-probe && test -x /usr/local/bin/encoder-probe && test -x /usr/local/bin/cstream-login-probe && test -x /usr/local/bin/cstream-frame-probe && echo PROBES-OK
               stdout:
                 - contains: PROBES-OK
         service:
