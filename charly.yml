@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.1450
+        version: 2026.242.1545
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -54,7 +54,7 @@ cstream:
                 cd /tmp
                 git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
                 cd src
-                git checkout -q 113795bbcb22eb6ad7558ff0bded339ac9af9561
+                git checkout -q b0756118a025757284b1f1b63aa969b0f807917a
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
@@ -136,6 +136,72 @@ cstream:
                 gst-inspect-1.0 webrtcbin >/dev/null 2>&1 && echo WEBRTCBIN-OK
               stdout:
                 - contains: WEBRTCBIN-OK
+            # WP4 resize. Each resize is paired with an OBSERVATION on the nested
+            # compositor, because the socket reply only proves the streamer applied
+            # new caps -- it says nothing about whether the compositor reconfigured
+            # its output. Aquamarine snaps an unsatisfiable configure to 1280x720
+            # in SILENCE, so "no error" is not evidence here.
+            #
+            # 1600x900 is asserted as 1600x896: Geometry::sanitised rounds to a
+            # multiple of 8 and 900 is not one. The plan's own WP4 gate lists the
+            # requested 900, which cannot apply -- a gate asserting it would fail
+            # against correct behaviour.
+            - check: WP4 the control socket applies a resize and REPORTS what it applied
+              id: cstream-resize-applies
+              context:
+                - runtime
+              exit_status: 0
+              command:
+                  in_container: true
+                  command: |
+                      printf 'resize 1600 900\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock
+              stdout:
+                - contains: "OK resize 1600x896"
+            - check: WP4 the nested compositor really reconfigured to the applied size
+              id: cstream-resize-observed
+              context:
+                - runtime
+              wl:
+                method: hypr-monitors
+              stdout:
+                # BOTH dimensions. "1600" alone could match a coordinate or a
+                # refresh rate; 896 is the distinctive value -- it is the ROUNDED
+                # height, so asserting it proves the round-to-8 reached the
+                # compositor rather than stopping at the capsfilter.
+                - contains: "\"width\": 1600"
+                - contains: "\"height\": 896"
+            - check: WP4 a second distinct size applies, so the first was not a coincidence
+              id: cstream-resize-small
+              context:
+                - runtime
+              exit_status: 0
+              command:
+                  in_container: true
+                  command: |
+                      # The 500ms rate limit is on APPLIED resizes; the preceding
+                      # observation step has already spent longer than that. A bounded
+                      # retry is still used rather than a sleep, so this cannot become
+                      # a flake if step timing changes.
+                      for _ in $(seq 20); do
+                          r=$(printf 'resize 640 480\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock)
+                          case "$r" in
+                              *"OK resize 640x480"*) echo "$r"; exit 0 ;;
+                              *rate-limited*) sleep 0.2 ;;
+                              *) echo "$r"; exit 1 ;;
+                          esac
+                      done
+                      echo "RESIZE-FAIL: still rate-limited after 4s"; exit 1
+              stdout:
+                - contains: "OK resize 640x480"
+            - check: WP4 the compositor followed the second resize down
+              id: cstream-resize-small-observed
+              context:
+                - runtime
+              wl:
+                method: hypr-monitors
+              stdout:
+                - contains: "\"width\": 640"
+                - contains: "\"height\": 480"
             - check: "the streamer has its OWN PAM service, not a borrowed login stack"
               id: cstream-pam-service
               exit_status: 0
