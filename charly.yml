@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.0700
+        version: 2026.242.1030
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -48,10 +48,12 @@ cstream:
                 cd /tmp
                 git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
                 cd src
-                git checkout -q 3898e9a8a3e6bfa114cde366f87ac349c259a436
+                git checkout -q d9595ff8962fef71d532617c30dfaa47cfb0cd7a
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
+                cargo build --release -p cstream-streamer --bin cstream-streamer
+                install -Dm755 target/release/cstream-streamer /usr/local/bin/cstream-streamer
                 cargo build --release -p cstream-streamer --bin cstream-streamer
                 install -Dm755 target/release/cstream-streamer /usr/local/bin/cstream-streamer
                 cd /
@@ -136,9 +138,25 @@ cstream:
                 - contains: PROBES-OK
         service:
             - name: cstream-parent
-              exec: /usr/local/bin/cstream-parent
+              # The STREAMER is the Wayland parent -- the name is kept so consumers
+              # and checks that wait on `cstream-parent` keep working, but what runs
+              # is the streamer itself.
+              #
+              # waylanddisplaysrc creates a compositor and holds the render node, so
+              # nothing else can observe this display: a second one negotiates
+              # "Supported DMA formats: []" and produces nothing. Running a separate
+              # parent alongside the streamer therefore gave a consumer a negotiated
+              # WebRTC session with no media -- the streamer was capturing its own
+              # empty compositor while the desktop nested into the other one.
+              #
+              # CSTREAM_FRAME_DIR turns on the tap the frame-content gate reads, so
+              # this one pipeline provides what two used to.
+              exec: /usr/local/bin/cstream-streamer
               env:
                 XDG_RUNTIME_DIR: /tmp/cstream-rt
+                CSTREAM_ENCODE: auto
+                CSTREAM_RENDER_NODE: /dev/dri/renderD128
+                CSTREAM_FRAME_DIR: /tmp/cstream-frames
               restart: always
               priority: 10
               start_sec: 2
