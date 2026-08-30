@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.1715
+        version: 2026.242.1830
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -95,6 +95,15 @@ cstream:
             - run: stage the streamer's own PAM service
               copy: etc/pam-cstream
               to: /etc/pam.d/cstream
+              mode: "0644"
+              run_as: root
+            # The session lifetime the compositor binds to. A raw unit because a
+            # .target has no cross-init analogue -- supervisord has no concept of
+            # one, which is exactly why the systemd venue needed it and the pod
+            # venue never noticed its absence.
+            - run: stage the cstream session target
+              copy: etc/cstream-session.target
+              to: /etc/systemd/system/cstream-session.target
               mode: "0644"
               run_as: root
             - check: the gateway binary is installed
