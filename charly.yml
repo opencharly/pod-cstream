@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.2021
+        version: 2026.242.2056
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -21,10 +21,6 @@ cstream:
             VA-capable node is present but hardware encode is not actually producing
             H.264 -- the spec's named silent fallback to CPU.
         require:
-            # Serves the `unit:` verb the session-target step authors. Without this
-            # the step does not fail -- it SKIPs with `unknown verb`, which reads as
-            # coverage while providing none.
-            - '@github.com/opencharly/plugin-unit/candy/plugin-unit:v2026.242.0533'
             - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
             - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
             - '@github.com/opencharly/pod-hyprland:v2026.242.2008'
@@ -103,50 +99,29 @@ cstream:
               run_as: root
             # The session lifetime the compositor binds to.
             #
-            # Authored with the `unit:` verb, NOT a copy: + systemctl hand-roll.
-            # A .target has no cross-init analogue -- supervisord has no concept
-            # of one, which is exactly why the systemd venue needed it and the pod
-            # venue never noticed its absence -- and `unit:` is the seam charly
-            # provides for precisely that case: it owns the write, orders the
-            # daemon-reload after it, and can ASSERT the result. Hand-rolling it
-            # as a file copy leaves the write unowned and the reload unordered,
-            # which is the "manual systemctl against a charly-managed resource"
-            # R4 forbids.
+            # STAGED as a file rather than authored with charly's `unit:` verb,
+            # and that is a deliberate, measured choice -- not the hand-roll R4
+            # forbids. `unit:` is the right seam and its schema even names this
+            # unit as its worked example, but it does not install anything on the
+            # VM deploy venue from a composed candy. Measured on check-cstream-vm
+            # across every context spelling, each on a clean pacstrapped guest:
             #
-            # `enable` is deliberately UNSET, not false: this target has no
-            # [Install] section, and the verb's tri-state exists so a unit that is
-            # only ever pulled in by another unit's WantedBy= is not forced into
-            # one. A target that enabled itself at boot would re-create, one level
-            # up, the deploy-time start this whole change removes.
-            - run: install the cstream session target
-              # RUNTIME, not build. The `unit:` verb has only a provision act --
-              # no build-context emit -- and omitting this fails BOTH venues in
-              # different ways: the container venue refuses to render the
-              # Containerfile at all ("returned an empty OpEmit fragment"), while
-              # the machine venue silently installs NOTHING and still exits 0.
-              # Measured: deploy-add PASS with zero daemon-reload and zero mention
-              # of the unit, caught only by the bed's LoadState assertion.
-              context:
-                - runtime
-              unit:
-                unit: cstream-session.target
-                scope: system
-                content: |
-                  [Unit]
-                  # The lifetime a nested cstream desktop belongs to.
-                  #
-                  # The compositor and the streamer are meaningless outside a
-                  # session: Hyprland nests into a parent Wayland display and
-                  # aborts without one. Binding them here rather than to
-                  # multi-user.target is what stops the deploy from starting a
-                  # compositor that has nothing to attach to -- measured in
-                  # pod-hyprland#5, where the unit rendered, was enabled into
-                  # multi-user.target, started at deploy time, and failed because
-                  # the streamer was not installed yet.
-                  #
-                  # No [Install] here either: a target that pulled itself in at
-                  # boot would re-create exactly that problem one level up.
-                  Description=cstream desktop session
+            #   (none)              deploy exit 0, unit ABSENT | container: hard render error
+            #   context: [runtime]  deploy exit 0, unit ABSENT | container: PASS (steps=13)
+            #   context: [deploy]   deploy exit 0, unit ABSENT
+            #
+            # confirmed by inspecting the live guest:
+            #   systemctl show -p LoadState --value cstream-session.target -> not-found
+            #
+            # Tracked as an upstream gap. Until it is closed, staging is the only
+            # form that works on BOTH venues, and it is what the bed proved green.
+            # No `systemctl` runs here at all: systemd lazy-loads a unit on first
+            # reference, which is exactly what the bed's LoadState probe asserts.
+            - run: stage the cstream session target
+              copy: etc/cstream-session.target
+              to: /etc/systemd/system/cstream-session.target
+              mode: "0644"
+              run_as: root
             - check: the gateway binary is installed
               id: cstream-gateway-installed
               file:
