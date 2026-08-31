@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0245
+        version: 2026.243.0758
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -64,6 +64,21 @@ cstream:
             # fails to build its pipeline with `Failed to make element webrtcbin`
             # -- a WARN, not an error, so the stream silently carries no media.
             - gst-plugins-bad
+            # `pipewiresrc`, which the streamer's audio branch captures with. NOT
+            # supplied by pod-pipewire: that gives the daemon, wireplumber and pw-cli,
+            # while the GStreamer element is its own Arch package. Measured the hard
+            # way -- without it the streamer aborts at startup with
+            #
+            #   Error: attaching the audio branch
+            #     0: creating pipewiresrc — is gst-plugin-pipewire installed?
+            #     1: Failed to find element factory with name 'pipewiresrc'
+            #
+            # and because the streamer IS the Wayland parent, that takes the WHOLE
+            # stack down: cstream-parent goes FATAL, cstream-hyprland restart-loops
+            # with no parent display, and the consumer-side frame probe then waits on
+            # media that will never arrive. The blast radius of a missing audio
+            # element is the entire session, not the audio.
+            - gst-plugin-pipewire
         plan:
             - run: build the gateway and the session leader from the pinned streamer
               command: |
@@ -71,7 +86,7 @@ cstream:
                 cd /tmp
                 git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
                 cd src
-                git checkout -q b0756118a025757284b1f1b63aa969b0f807917a
+                git checkout -q f20647f98f8de8c264e86280946d973fef0eb6d3
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
@@ -234,6 +249,26 @@ cstream:
                 gst-inspect-1.0 webrtcbin >/dev/null 2>&1 && echo WEBRTCBIN-OK
               stdout:
                 - contains: WEBRTCBIN-OK
+            - check: pipewiresrc is present -- the streamer ABORTS at startup without it
+              id: cstream-pipewiresrc-registered
+              exit_status: 0
+              command: |
+                # Same class as the webrtcbin gate above, and it bit for real: the audio
+                # branch creates `pipewiresrc`, and pod-pipewire does NOT supply that
+                # element -- it ships the daemon, wireplumber and pw-cli, while the
+                # GStreamer plugin is the separate gst-plugin-pipewire package.
+                #
+                # Worse than the webrtcbin case, because this one is not a WARN. The
+                # streamer fails to build its graph and EXITS, and the streamer IS the
+                # Wayland parent, so the whole session goes with it: cstream-parent
+                # FATAL, cstream-hyprland restart-looping, the frame probe hanging on
+                # media that never comes. An 11-minute bed hang, from one absent package.
+                #
+                # Checked at IMAGE level so a composition mistake fails at build rather
+                # than as a mystery hang in check-live.
+                gst-inspect-1.0 pipewiresrc >/dev/null 2>&1 && echo PIPEWIRESRC-OK
+              stdout:
+                - contains: PIPEWIRESRC-OK
             # WP4 resize. Each resize is paired with an OBSERVATION on the nested
             # compositor, because the socket reply only proves the streamer applied
             # new caps -- it says nothing about whether the compositor reconfigured
