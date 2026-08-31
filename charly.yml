@@ -83,10 +83,25 @@ cstream:
             - run: build the gateway and the session leader from the pinned streamer
               command: |
                 set -e
+                set -o pipefail
                 cd /tmp
-                git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
+                # Fetched as a codeload TARBALL rather than cloned. Measured on the build host
+                # 2026-08-31, seconds apart, against this repo -- which is PUBLIC:
+                #
+                #   GET  codeload.github.com/.../tar.gz/<sha>  -> 200
+                #   POST github.com/.../git-upload-pack (anon) -> 401
+                #                                    www-authenticate: Basic realm="GitHub"
+                #
+                # GitHub throttles anonymous git, and a build container has no credentials, so
+                # the clone dies with `could not read Username` for a repo that is not private.
+                # It surfaces ONLY when this pin moves, because the layer is cached until then --
+                # which is how it presented: as a failure of the bump rather than of the fetch.
+                # The tarball is also pinned by exact SHA instead of cloned-then-checked-out.
+                # pipefail is required, or a refused curl is masked by a tar that exits 0.
+                mkdir -p src
+                curl -fsSL https://codeload.github.com/opencharly/charly-streamer/tar.gz/de1ff6f50fc775b0babfd23bd058fcf8f0c8f848 \
+                    | tar xz -C src --strip-components=1
                 cd src
-                git checkout -q de1ff6f50fc775b0babfd23bd058fcf8f0c8f848
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
