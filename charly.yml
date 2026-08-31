@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0850
+        version: 2026.243.1053
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -83,10 +83,25 @@ cstream:
             - run: build the gateway and the session leader from the pinned streamer
               command: |
                 set -e
+                set -o pipefail
                 cd /tmp
-                git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
+                # Fetched as a codeload TARBALL rather than cloned. Measured on the build host
+                # 2026-08-31, seconds apart, against this repo -- which is PUBLIC:
+                #
+                #   GET  codeload.github.com/.../tar.gz/<sha>  -> 200
+                #   POST github.com/.../git-upload-pack (anon) -> 401
+                #                                    www-authenticate: Basic realm="GitHub"
+                #
+                # GitHub throttles anonymous git, and a build container has no credentials, so
+                # the clone dies with `could not read Username` for a repo that is not private.
+                # It surfaces ONLY when this pin moves, because the layer is cached until then --
+                # which is how it presented: as a failure of the bump rather than of the fetch.
+                # The tarball is also pinned by exact SHA instead of cloned-then-checked-out.
+                # pipefail is required, or a refused curl is masked by a tar that exits 0.
+                mkdir -p src
+                curl -fsSL https://codeload.github.com/opencharly/charly-streamer/tar.gz/de1ff6f50fc775b0babfd23bd058fcf8f0c8f848 \
+                    | tar xz -C src --strip-components=1
                 cd src
-                git checkout -q a8ac5def6c5ef30878138a71c73a7680bfeca8ae
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
@@ -308,6 +323,17 @@ cstream:
               file:
                 file: /usr/local/bin/cstream-streamer
                 exists: true
+            - check: the installed streamer carries the WP5 lock path, so the pin bump really took
+              id: cstream-lock-compiled-in
+              exit_status: 0
+              command: |
+                # A pin bump is exactly the change that can silently NOT happen: a cached
+                # layer, a ref that resolved to the old commit, and the file check above
+                # still passes because a streamer IS installed -- the previous one. The
+                # env var name only exists in the binary built from the WP5 commit.
+                grep -aq CSTREAM_LOCK_AFTER /usr/local/bin/cstream-streamer && echo LOCK-PATH-PRESENT
+              stdout:
+                - contains: LOCK-PATH-PRESENT
             - check: webrtcsink is present -- the ONLY element that can carry the stream
               id: cstream-webrtcsink-registered
               exit_status: 0
@@ -488,6 +514,9 @@ cstream:
                 CSTREAM_ENCODE: auto
                 CSTREAM_RENDER_NODE: /dev/dri/renderD128
                 CSTREAM_FRAME_DIR: /tmp/cstream-frames
+                # WP5: with no viewer for this long the desktop locks itself. The plan's
+                # own manual end-to-end expects a lock ~10s after disconnect.
+                CSTREAM_LOCK_AFTER: "10"
               restart: always
               priority: 10
               start_sec: 2
