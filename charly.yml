@@ -26,7 +26,7 @@ cstream:
             # to instantiate them, and pod-pipewire is that (daemon + wireplumber
             # + pw-cli, service priority 5, which is already the slot the plan's
             # start chain reserves for it: dbus 2 -> pipewire 5 -> broker 8).
-            - '@github.com/opencharly/pod-pipewire:v2026.239.1555'
+            - '@github.com/opencharly/pod-pipewire:v2026.243.0508'
             - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
             - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
             # pod-hyprland is deliberately NOT required here. It is composed by
