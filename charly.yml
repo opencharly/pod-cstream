@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0037
+        version: 2026.243.0048
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -151,8 +151,26 @@ cstream:
                   # endpoints -- so a file test passes while the audio path does
                   # not exist. `pw-cli ls Node` is the state PipeWire actually
                   # reached.
-                  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/cstream-rt}"
-                  out=$(pw-cli ls Node 2>&1) || { echo "PW-CLI-FAILED: $out" >&2; exit 1; }
+                  # LOCATE the socket rather than assume it. pod-pipewire's wrapper
+                  # defaults XDG_RUNTIME_DIR to /tmp, while /tmp/cstream-rt is the
+                  # streamer's Wayland runtime dir -- they are different, and a
+                  # hardcoded guess makes this gate fail for the wrong reason.
+                  # No bash-style default-expansion anywhere in this body -- not
+                  # even in a comment. That form is not a charly runtime var and
+                  # charly SKIPS the whole step as an unresolved variable, after
+                  # which the bed still reports PASS while asserting nothing
+                  # (measured on this very check, run 2026.243.0037).
+                  found=""
+                  for d in "$XDG_RUNTIME_DIR" /tmp /tmp/cstream-rt /run/user/1000; do
+                      test -n "$d" || continue
+                      if test -S "$d/pipewire-0"; then found="$d"; break; fi
+                  done
+                  test -n "$found" || {
+                      echo "PW-SOCKET-NOT-FOUND: no pipewire-0 in \$XDG_RUNTIME_DIR, /tmp, /tmp/cstream-rt or /run/user/1000" >&2
+                      ls -la /tmp /run/user/1000 2>/dev/null | head -20 >&2
+                      exit 1; }
+                  export XDG_RUNTIME_DIR="$found"
+                  out=$(pw-cli ls Node 2>&1) || { echo "PW-CLI-FAILED (runtime dir $found): $out" >&2; exit 1; }
                   miss=""
                   for n in cstream-speaker cstream-mic; do
                       printf '%s' "$out" | grep -q "\"$n\"" || miss="$miss $n"
