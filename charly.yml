@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0048
+        version: 2026.243.0218
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -29,7 +29,7 @@ cstream:
             - '@github.com/opencharly/pod-pipewire:v2026.239.1555'
             - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
             - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
-            - '@github.com/opencharly/pod-hyprland:v2026.242.2008'
+            - '@github.com/opencharly/pod-hyprland:v2026.243.0216'
         port:
             - 8080
         package:
