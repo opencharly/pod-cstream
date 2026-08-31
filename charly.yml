@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.242.2056
+        version: 2026.243.0048
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -21,6 +21,12 @@ cstream:
             VA-capable node is present but hardware encode is not actually producing
             H.264 -- the spec's named silent fallback to CPU.
         require:
+            # WP6: the audio substrate. A streamed desktop has no sound card, so
+            # the endpoints below are virtual -- but something has to run PipeWire
+            # to instantiate them, and pod-pipewire is that (daemon + wireplumber
+            # + pw-cli, service priority 5, which is already the slot the plan's
+            # start chain reserves for it: dbus 2 -> pipewire 5 -> broker 8).
+            - '@github.com/opencharly/pod-pipewire:v2026.239.1555'
             - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
             - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
             - '@github.com/opencharly/pod-hyprland:v2026.242.2008'
@@ -78,6 +84,15 @@ cstream:
               to: /usr/local/bin/encoder-probe
               mode: "0755"
               run_as: root
+            # WP6: the two virtual endpoints PipeWire instantiates at start.
+            # A drop-in rather than a whole pipewire.conf: replacing the shipped
+            # config would silently discard the distro's own defaults, and only
+            # the objects list needs adding.
+            - run: stage the cstream audio endpoints
+              copy: etc/pipewire-cstream.conf
+              to: /etc/pipewire/pipewire.conf.d/50-cstream.conf
+              mode: "0644"
+              run_as: root
             - run: stage the login probe the bed drives
               copy: etc/login-probe
               to: /usr/local/bin/cstream-login-probe
@@ -122,6 +137,53 @@ cstream:
               to: /etc/systemd/system/cstream-session.target
               mode: "0644"
               run_as: root
+            - check: the cstream audio endpoints EXIST as live PipeWire nodes
+              id: cstream-audio-nodes
+              context:
+                - runtime
+              exit_status: 0
+              command:
+                in_container: true
+                command: |
+                  # Asserting the NODES, not the config file. A drop-in with a
+                  # syntax error still sits on disk exactly like a good one, and
+                  # PipeWire logs the parse failure and carries on with no
+                  # endpoints -- so a file test passes while the audio path does
+                  # not exist. `pw-cli ls Node` is the state PipeWire actually
+                  # reached.
+                  # LOCATE the socket rather than assume it. pod-pipewire's wrapper
+                  # defaults XDG_RUNTIME_DIR to /tmp, while /tmp/cstream-rt is the
+                  # streamer's Wayland runtime dir -- they are different, and a
+                  # hardcoded guess makes this gate fail for the wrong reason.
+                  # No bash-style default-expansion anywhere in this body -- not
+                  # even in a comment. That form is not a charly runtime var and
+                  # charly SKIPS the whole step as an unresolved variable, after
+                  # which the bed still reports PASS while asserting nothing
+                  # (measured on this very check, run 2026.243.0037).
+                  found=""
+                  for d in "$XDG_RUNTIME_DIR" /tmp /tmp/cstream-rt /run/user/1000; do
+                      test -n "$d" || continue
+                      if test -S "$d/pipewire-0"; then found="$d"; break; fi
+                  done
+                  test -n "$found" || {
+                      echo "PW-SOCKET-NOT-FOUND: no pipewire-0 in \$XDG_RUNTIME_DIR, /tmp, /tmp/cstream-rt or /run/user/1000" >&2
+                      ls -la /tmp /run/user/1000 2>/dev/null | head -20 >&2
+                      exit 1; }
+                  export XDG_RUNTIME_DIR="$found"
+                  out=$(pw-cli ls Node 2>&1) || { echo "PW-CLI-FAILED (runtime dir $found): $out" >&2; exit 1; }
+                  miss=""
+                  for n in cstream-speaker cstream-mic; do
+                      printf '%s' "$out" | grep -q "\"$n\"" || miss="$miss $n"
+                  done
+                  [ -z "$miss" ] || {
+                      echo "AUDIO-NODES-MISSING:$miss -- the drop-in did not instantiate them" >&2
+                      printf '%s' "$out" | grep -i 'node.name' | head -20 >&2
+                      exit 1; }
+                  echo AUDIO-NODES-PRESENT
+              stdout:
+                - contains: AUDIO-NODES-PRESENT
+              eventually: 120s
+              retry_interval: 10s
             - check: the gateway binary is installed
               id: cstream-gateway-installed
               file:
