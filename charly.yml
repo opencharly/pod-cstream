@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0218
+        version: 2026.243.0245
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -29,7 +29,18 @@ cstream:
             - '@github.com/opencharly/pod-pipewire:v2026.239.1555'
             - '@github.com/opencharly/layer-supervisord:v2026.240.0121'
             - '@github.com/opencharly/layer-gst-wayland-display:v2026.241.2202'
-            - '@github.com/opencharly/pod-hyprland:v2026.243.0216'
+            # pod-hyprland is deliberately NOT required here. It is composed by
+            # layer-cstream-desktop, whose own description says a metalayer's
+            # members "are what it IS" and warns that installing the same thing in
+            # two places gives "a consumer two places to look for the same
+            # behaviour". Pinning it here was that second place: nothing in this
+            # candy's plan uses Hyprland (measured -- the require line was the only
+            # reference in the whole manifest), and two pins on one candy is what
+            # produced `resolved to multiple versions` every time either moved.
+            #
+            # The direction also matters: the layer's rationale is that THIS pod
+            # supplies the parent display Hyprland nests into. Requiring the
+            # compositor from the parent states the dependency backwards.
         port:
             - 8080
         package:
