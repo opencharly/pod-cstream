@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0758
+        version: 2026.243.0850
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -86,7 +86,7 @@ cstream:
                 cd /tmp
                 git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
                 cd src
-                git checkout -q f20647f98f8de8c264e86280946d973fef0eb6d3
+                git checkout -q a8ac5def6c5ef30878138a71c73a7680bfeca8ae
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
@@ -208,6 +208,89 @@ cstream:
                   echo AUDIO-NODES-PRESENT
               stdout:
                 - contains: AUDIO-NODES-PRESENT
+              eventually: 120s
+              retry_interval: 10s
+            - check: the streamer captures the speaker's MONITOR, not its input
+              id: cstream-audio-monitor-captured
+              context:
+                - runtime
+              exit_status: 0
+              command:
+                in_container: true
+                command: |
+                  # THE assertion for the streamer's `stream.capture.sink` property.
+                  #
+                  # cstream-speaker is a SINK; the outbound track is its MONITOR --
+                  # what the sink receives, seen from the other side. PipeWire routes
+                  # a capture stream there only when the stream carries
+                  # stream.capture.sink=true. Without it the stream asks to record
+                  # from a sink's input, finds nothing, and carries SILENCE.
+                  #
+                  # Every weaker check passes in that state: the nodes exist, the
+                  # streamer is RUNNING, the pipeline reaches PLAYING, video flows.
+                  # The only observable difference is whether anything is linked to
+                  # the monitor ports, so that is what this asserts.
+                  #
+                  # Socket located, never assumed: pod-pipewire's wrapper keeps
+                  # whatever XDG_RUNTIME_DIR it inherited (/tmp/xdg-runtime here, NOT
+                  # the /tmp its own default suggests), while the streamer moves its
+                  # own to /tmp/cstream-rt. No bash-style default-expansion in this
+                  # body -- charly SKIPs the step as an unresolved variable and the
+                  # bed then reports PASS while asserting nothing.
+                  found=""
+                  for d in "$XDG_RUNTIME_DIR" /tmp/xdg-runtime /tmp /tmp/cstream-rt /run/user/1000; do
+                      test -n "$d" || continue
+                      if test -S "$d/pipewire-0"; then found="$d"; break; fi
+                  done
+                  test -n "$found" || {
+                      echo "PW-SOCKET-NOT-FOUND: no pipewire-0 in any candidate runtime dir" >&2
+                      exit 1; }
+                  export XDG_RUNTIME_DIR="$found"
+                  command -v pw-link >/dev/null 2>&1 || {
+                      echo "PW-LINK-ABSENT: cannot answer whether the monitor is captured" >&2
+                      exit 1; }
+                  links=$(pw-link -l 2>&1) || {
+                      echo "PW-LINK-FAILED (runtime dir $found): $links" >&2
+                      exit 1; }
+                  # BOTH channels, not merely "something is linked". Asserting that the
+                  # monitor has A link PASSED while the stream negotiated a single
+                  # input_MONO port and PipeWire linked monitor_FL only -- the right
+                  # channel was dropped, not mixed down, and desktop audio was
+                  # left-channel-only with every check green. Fixed upstream by pinning
+                  # channels=2 on the source caps (charly-streamer#11); this is the
+                  # assertion that would have caught it, so it is written the strong way.
+                  missing=""
+                  for ch in FL FR; do
+                      printf '%s\n' "$links" | grep -A 3 "cstream-speaker:monitor_$ch" \
+                          | grep -q '|->' || missing="$missing monitor_$ch"
+                  done
+                  if [ -z "$missing" ]; then
+                      echo AUDIO-MONITOR-CAPTURED-STEREO
+                      exit 0
+                  fi
+                  if printf '%s\n' "$links" | grep -A 3 'cstream-speaker:monitor' | grep -q '|->'; then
+                      echo "AUDIO-MONITOR-HALF-CAPTURED: linked, but NOT on:$missing" >&2
+                      echo "Audio flows and is missing a channel: the source negotiated fewer" >&2
+                      echo "channels than the monitor has, so PipeWire linked what it could and" >&2
+                      echo "dropped the rest. Check the capsfilter UPSTREAM of audioconvert --" >&2
+                      echo "downstream of it, conversion satisfies the caps and the source still" >&2
+                      echo "takes one channel." >&2
+                      printf '%s\n' "$links" | head -40 >&2
+                      exit 1
+                  fi
+                  echo "AUDIO-MONITOR-NOT-CAPTURED: nothing is linked to cstream-speaker's monitor ports." >&2
+                  echo "Either the audio branch is off (CSTREAM_AUDIO), it could not reach PipeWire" >&2
+                  echo "(PIPEWIRE_RUNTIME_DIR -- the streamer and PipeWire use different runtime dirs)," >&2
+                  echo "or it attached without stream.capture.sink, which connects and carries silence." >&2
+                  echo "NOTE: a bare 'target not found' from pipewiresrc does NOT mean the node is" >&2
+                  echo "missing -- pipewiresrc serves audio AND video, and with a caps-agnostic peer it" >&2
+                  echo "negotiates VIDEO and truthfully reports no video target. Cost an hour once." >&2
+                  printf '%s\n' "$links" | head -40 >&2
+                  echo "--- audio nodes ---" >&2
+                  pw-cli ls Node 2>&1 | grep -iE 'node.name|media.class' | head -30 >&2
+                  exit 1
+              stdout:
+                - contains: AUDIO-MONITOR-CAPTURED-STEREO
               eventually: 120s
               retry_interval: 10s
             - check: the gateway binary is installed
@@ -381,6 +464,27 @@ cstream:
               exec: /usr/local/bin/cstream-streamer
               env:
                 XDG_RUNTIME_DIR: /tmp/cstream-rt
+                # PipeWire lives in a DIFFERENT runtime dir, and both are correct.
+                # This process moves XDG_RUNTIME_DIR to its own Wayland dir above,
+                # while pod-pipewire's wrapper keeps whatever it inherited --
+                # /tmp/xdg-runtime here. pipewiresrc therefore looks for the socket
+                # where the compositor lives and finds nothing, failing the pipeline
+                # at PLAYING with a bare
+                #
+                #   GstPipeWireSrc:pipewiresrc0: Failed to connect
+                #
+                # PIPEWIRE_RUNTIME_DIR is honoured independently of XDG_RUNTIME_DIR,
+                # so it bridges the split without disturbing the Wayland side.
+                # Measured as a clean A/B in the live pod:
+                #
+                #   XDG=/tmp/cstream-rt                             -> Failed to connect
+                #   XDG=/tmp/cstream-rt PIPEWIRE=/tmp/xdg-runtime   -> Execution ended, no error
+                PIPEWIRE_RUNTIME_DIR: /tmp/xdg-runtime
+                # WP6 audio ON. Opt-in by default since charly-streamer#10, because a
+                # failure to attach aborts the process and this process is the Wayland
+                # parent -- so it is enabled only where the path is proven, which is
+                # what the cstream-audio-monitor-captured gate below asserts.
+                CSTREAM_AUDIO: "on"
                 CSTREAM_ENCODE: auto
                 CSTREAM_RENDER_NODE: /dev/dri/renderD128
                 CSTREAM_FRAME_DIR: /tmp/cstream-frames

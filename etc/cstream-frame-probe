@@ -55,9 +55,25 @@ fi
 # connect-to-first-producer defaults to FALSE. Without it the consumer connects
 # to signalling and waits forever for a peer-id nobody supplies: no error, no
 # frame, a timeout indistinguishable from a dead stream.
+#
+# BOTH pads are consumed, by name. webrtcsrc exposes `video_%u` and `audio_%u` as
+# "Sometimes" pads, and a consumer must take everything the producer offers. Once
+# WP6 added an audio track, the bare `webrtcsrc ! videoconvert` form left the audio
+# pad dangling and the whole flow died with
+#
+#   streaming stopped, reason not-linked (-1)
+#
+# which reads like a transport fault and is really an unconsumed pad. It took the
+# VIDEO gate down: enabling audio broke the video PROBE, not the video path.
+# Measured on the live pod -- bare form: error, 14 frames then death; both pads
+# consumed: 1792 frames, no error.
+#
+# `audio-codecs="<>"` is NOT the fix; it was tried, the audio transport is still
+# built and the same not-linked error appears.
 timeout "$DEADLINE" gst-launch-1.0 -q \
-    webrtcsrc signaller::uri="$SIGNALLING" connect-to-first-producer=true \
-    ! videoconvert ! jpegenc ! multifilesink location="$WORK/f-%05d.jpg" \
+    webrtcsrc name=src signaller::uri="$SIGNALLING" connect-to-first-producer=true \
+    src.video_0 ! videoconvert ! jpegenc ! multifilesink location="$WORK/f-%05d.jpg" \
+    src.audio_0 ! fakesink \
     >"$WORK/gst.log" 2>&1 &
 GST=$!
 
