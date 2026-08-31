@@ -1,7 +1,7 @@
 version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.0850
+        version: 2026.243.1053
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
@@ -86,7 +86,7 @@ cstream:
                 cd /tmp
                 git clone --filter=blob:none --no-checkout https://github.com/opencharly/charly-streamer src
                 cd src
-                git checkout -q a8ac5def6c5ef30878138a71c73a7680bfeca8ae
+                git checkout -q de1ff6f50fc775b0babfd23bd058fcf8f0c8f848
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
@@ -308,6 +308,17 @@ cstream:
               file:
                 file: /usr/local/bin/cstream-streamer
                 exists: true
+            - check: the installed streamer carries the WP5 lock path, so the pin bump really took
+              id: cstream-lock-compiled-in
+              exit_status: 0
+              command: |
+                # A pin bump is exactly the change that can silently NOT happen: a cached
+                # layer, a ref that resolved to the old commit, and the file check above
+                # still passes because a streamer IS installed -- the previous one. The
+                # env var name only exists in the binary built from the WP5 commit.
+                grep -aq CSTREAM_LOCK_AFTER /usr/local/bin/cstream-streamer && echo LOCK-PATH-PRESENT
+              stdout:
+                - contains: LOCK-PATH-PRESENT
             - check: webrtcsink is present -- the ONLY element that can carry the stream
               id: cstream-webrtcsink-registered
               exit_status: 0
@@ -488,6 +499,9 @@ cstream:
                 CSTREAM_ENCODE: auto
                 CSTREAM_RENDER_NODE: /dev/dri/renderD128
                 CSTREAM_FRAME_DIR: /tmp/cstream-frames
+                # WP5: with no viewer for this long the desktop locks itself. The plan's
+                # own manual end-to-end expects a lock ~10s after disconnect.
+                CSTREAM_LOCK_AFTER: "10"
               restart: always
               priority: 10
               start_sec: 2
