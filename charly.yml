@@ -1,7 +1,5 @@
-version: 2026.240.1943
 cstream:
     candy:
-        version: 2026.243.1053
         description: |
             The cstream transport spine: the Wayland parent that IS the streamer, the
             browser-facing gateway, the PAM login broker, and the gates that prove
