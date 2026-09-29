@@ -67,7 +67,7 @@ charly start my-cstream
 - `charly.yml` — the `cstream:` candy entity.
 - `etc/` — the Wayland parent wrapper, the PAM service, the PipeWire drop-in, the
   session target, and the `stream-probe` / `encoder-probe` / `login-probe` /
-  `frame-probe` probes.
+  `cstream-frame-probe` probes.
 - `.github/workflows/tag-on-merge.yml` — CalVer tag + `CHANGELOG/` on merge.
 - `CHANGELOG/` — per-CalVer history.
 - `README.md` — this user overview.
