@@ -7,24 +7,29 @@ gates that prove the stack is actually *streaming* rather than merely started.
 
 ## What it provides
 
-Builds `cstream-gateway` (Go) and `cstream-leader` + `cstream-streamer` (Rust)
-from a pinned `charly-streamer` commit, stages the Wayland parent wrapper, the
-PAM service, the PipeWire audio endpoints, the session target, and four probes.
-Two supervised services run the pipeline:
+Builds `cstream-gateway` (Go) and `cstream-leader`, `cstream-streamer` and
+`cstream-input` (Rust) from a pinned `charly-streamer` commit. It also stages the
+PAM service, the PipeWire audio endpoints and the session target. Two supervised
+services run the pipeline:
 
 | Property | Value |
 |---|---|
-| Services | `cstream-parent` (the streamer itself — the Wayland parent, priority 10), `cstream-gateway` (priority 18) |
+| Services | `cstream-streamer` (the Wayland parent, priority 10), `cstream-gateway` (the browser player, login and signalling proxy, priority 18) |
 | Port | `8080` (browser-facing gateway) |
 | Requires | `pod-pipewire`, `layer-supervisord`, `layer-gst-wayland-display` |
 | Packages | `go`, `rust`, `pam`, `socat`, `foot`, `gst-plugins-good`/`bad`, `gst-plugin-rswebrtc`, `gst-plugin-pipewire` |
-| Env | `CSTREAM_AUDIO=on`, `CSTREAM_ENCODE=auto`, `CSTREAM_RENDER_NODE`, `CSTREAM_FRAME_DIR`, `CSTREAM_LOCK_AFTER=10` |
+| Env | `CSTREAM_AUDIO=on`, `CSTREAM_ENCODE=auto`, `CSTREAM_FRAME_DIR`; accepted: `CSTREAM_RENDER_NODE` (default: charly's `DRINODE`), `CSTREAM_ENCODE`, `CSTREAM_LOCK_AFTER` (default off) |
 | PAM | `/etc/pam.d/cstream` (its own service, not a borrowed `login` stack) |
 
 The streamer creates the parent compositor and holds the render node, so it *is*
 the Wayland parent — a separate parent would negotiate a WebRTC session with no
-media. The nested desktop (Hyprland) is supplied by the consumer layer
-`layer-cstream-desktop`; this candy does not pin it.
+media. **No desktop is composed here.** The consuming pod nests one into this
+parent; pod-kde-cstream nests KDE Plasma through pod-kde-nested.
+
+The render node's kernel driver picks the encoder:
+- NVIDIA through CUDA (`nvh264enc`) on an `nvidia` node, as pod-cdi injects it through
+  CDI;
+- VA-API (`vah264enc`) on `amdgpu`/`i915`/`xe`.
 
 ## Why the gates are unusual
 
@@ -39,15 +44,24 @@ Three gates exist because the obvious checks are not evidence:
   one static frame satisfies it.
 
 So the streaming gate compares frames pulled **through the pipeline** before and
-after a real client window maps. The encoder gate fails when a VA-capable node is
-present but hardware H.264 is not actually producing a stream — the named silent
-fallback to CPU. The audio gates assert the live PipeWire nodes and that the
+after a real client window maps on the streamer's own compositor. The encoder gate
+reads the encoder the streamer reports it OPENED and fails on software, the named
+silent fallback to CPU. The audio gates assert the live PipeWire nodes and that the
 speaker's **monitor** ports (both channels) are captured.
+
+The streaming gate and the resize gates CHANGE the deployment: one maps a window over
+the desktop, the other resizes every viewer's stream. So they are not in this candy's
+baked plan, which `charly check live` runs against real deployments. They run in the
+consuming pods' disposable beds, as `run:` steps. pod-kde-cstream's
+`check-kde-cstream-pod` resizes through a matrix of sizes, from portrait 390x844 to
+3840x2160, and observes each one in the stream's frames, KWin's output and the pointer.
+The baked plan keeps what a live deployment can prove without change: the control
+socket is served and reports the stream's current size. Sizes are fitted to the chosen
+encoder's own limits and to even dimensions only, so 1366x768 streams as 1366x768.
 
 ## How to use it
 
-Compose the candy into a box (the consumer layer supplies the nested desktop and
-the session):
+Compose the candy into a box (the consuming pod supplies the nested desktop):
 
 ```yaml
 my-cstream:
@@ -65,21 +79,21 @@ charly start my-cstream
 ## Layout
 
 - `charly.yml` — the `cstream:` candy entity.
-- `etc/` — the Wayland parent wrapper, the PAM service, the PipeWire drop-in, the
-  session target, and the `stream-probe` / `encoder-probe` / `login-probe` /
-  `cstream-frame-probe` probes.
+- `etc/` — the PAM service, the PipeWire drop-in and the session target. The
+  `cstream:` verb's probes (login, frame, and the bed-only `stream-probe`) ship with
+  that verb in `opencharly/plugin-cstream`.
 - `.github/workflows/tag-on-merge.yml` — CalVer tag + `CHANGELOG/` on merge.
 - `CHANGELOG/` — per-CalVer history.
 - `README.md` — this user overview.
 
 ## Related
 
-- Closest family skill: `/charly-distros:omarchy-cstream` — documents the cstream
-  transport spine (the `wl_compositor` v6 constraint, the nested-Hyprland
-  composition). This candy has no `skill:` entity of its own (recorded on
+- `/charly-selkies:kde-cstream` — pod-kde-cstream, the KDE Plasma desktop
+  streamed through this candy, and its beds. This candy has no `skill:` entity of
+  its own (recorded on
   [opencharly/opencharly#291](https://github.com/opencharly/opencharly/issues/291)).
-- `/charly-check:wl` — the `wl:` check verb (including the Hyprland `wl: hypr-*`
-  methods the resize gates use), served by `plugin-wl`.
+- `/charly-check:check` — the `cstream:` verb's probes and the beds that compose
+  this candy.
 - `/charly-infrastructure:dbus-layer` / `/charly-selkies:selkies` — the desktop
   transport and nested-compositor background.
 - [`opencharly/charly`](https://github.com/opencharly/charly) — the charly CLI and image builder
