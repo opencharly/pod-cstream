@@ -33,7 +33,7 @@ cstream:
             # start chain reserves for it: dbus 2 -> pipewire 5 -> broker 8).
             - '@github.com/opencharly/pod-pipewire:v2026.314.0718'
             - '@github.com/opencharly/layer-supervisord:v2026.314.0710'
-            - '@github.com/opencharly/layer-gst-wayland-display:v2026.328.0926'
+            - '@github.com/opencharly/layer-gst-wayland-display:v2026.328.1627'
             # No desktop is required here: the composing pod nests one into the
             # parent this candy supplies, so the dependency points from the desktop
             # to the transport and never back.
