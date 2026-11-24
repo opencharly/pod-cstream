@@ -76,11 +76,6 @@ cstream:
             # element is the entire session, not the audio.
             - gst-plugin-pipewire
         plan:
-            - run: LOCAL-TEST-ONLY stage the charly-streamer tree
-              copy: charly-streamer-src.tar.gz
-              to: /tmp/charly-streamer-src.tar.gz
-              mode: "0644"
-              run_as: root
             - run: build the gateway, the session leader, the streamer and cstream-input from the pinned charly-streamer
               command: |
                 set -e
@@ -100,6 +95,14 @@ cstream:
                 # The tarball is also pinned by exact SHA instead of cloned-then-checked-out.
                 # pipefail is required, or a refused curl is masked by a tar that exits 0.
                 mkdir -p src
+                # THE PIN, in ONE place, and ASSERTED below: the URL and the check read the same
+                # value, so moving the pin is a one-line change that cannot leave the two halves
+                # disagreeing (review Block 1 on opencharly/pod-cstream#23: the build used to read
+                # a committed tarball staged by a step labelled LOCAL-TEST-ONLY, and the check
+                # accepted any 40-hex string).
+                PIN=d72b448b12ecaf92214c82be437a3f9e93b375e0
+                curl -fsSL "https://codeload.github.com/opencharly/charly-streamer/tar.gz/${PIN}" \
+                  -o /tmp/charly-streamer-src.tar.gz
                 # Provenance: the commit this image is built from, read from the archive itself
                 # (git archive, which GitHub's codeload also uses, stamps it into the pax header
                 # as comment=<sha>), so a bed run can PROVE which source it tested.
@@ -108,6 +111,9 @@ cstream:
                 # that stops early (head -c, grep -m1) kills its writer with SIGPIPE (141).
                 c=$(gzip -dc /tmp/charly-streamer-src.tar.gz | { head -c 4096; cat > /dev/null; } | grep -a -o 'comment=[0-9a-f]\{40\}' | sed -n '1s/comment=//p')
                 test -n "$c"
+                # EQUALITY, not "some 40-hex string": a swapped archive with a valid-looking
+                # comment must fail here.
+                test "$c" = "$PIN"
                 echo "$c" > /usr/local/share/cstream/BUILD_COMMIT
                 tar xzf /tmp/charly-streamer-src.tar.gz -C src --strip-components=1
                 cd src
@@ -404,7 +410,7 @@ cstream:
               exit_status: 0
               command: cat /usr/local/share/cstream/BUILD_COMMIT
               stdout:
-                - matches: '(?m)^[0-9a-f]{40}$'
+                - matches: '(?m)^d72b448b12ecaf92214c82be437a3f9e93b375e0$'
             - check: the stream input tool is installed (cstream-input ships with the streamer)
               id: cstream-probes-installed
               exit_status: 0
@@ -444,6 +450,18 @@ cstream:
               # CSTREAM_FRAME_DIR turns on the tap the frame-content gate reads, so
               # this one pipeline provides what two used to.
               exec: /usr/local/bin/cstream-streamer
+              # CAPTURE ITS OWN OUTPUT. Measured 2026-11-24: the streamer is re-spawned ~1
+              # minute into a browser session (supervisord escalated it to FATAL in one run)
+              # and NOTHING recorded why -- `supervisorctl tail cstream-streamer stderr`
+              # answers "ERROR (no log file)", and its stdout carried no FATAL at all. A
+              # service that discards its own crash output turns a one-line bug into four bed
+              # iterations of symptoms (opencharly/pod-kde-cstream#2).
+              # NOT under /tmp/cstream-rt/: that directory is created BY THE STREAMER
+              # (prepare_runtime_dir) after supervisord has already started it, so a log
+              # path there is a chicken-and-egg — supervisord cannot open the file, the
+              # container exits, and `charly check live` reports "container … is not
+              # running" (measured 2026-11-24, run 2026.327.2329). /tmp always exists.
+              stdout: /tmp/cstream-streamer.out
               env:
                 XDG_RUNTIME_DIR: /tmp/cstream-rt
                 # PipeWire lives in a DIFFERENT runtime dir, and both are correct.
