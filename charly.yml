@@ -14,31 +14,29 @@ cstream:
             frozen pipeline serving one static frame forever satisfies it.
 
             So the streaming gate compares frames pulled THROUGH the pipeline before
-            and after a real client window maps: a dead, frozen or placeholder
-            pipeline yields identical frames and fails. The encoder gate fails when a
-            VA-capable node is present but hardware encode is not actually producing
-            H.264 -- the spec's named silent fallback to CPU.
+            and after a real client window maps on the streamer's own compositor: a
+            dead, frozen or placeholder pipeline yields identical frames and fails.
+            The encoder gate reads the encoder the streamer reports it OPENED and
+            fails on a software one -- the spec's named silent fallback to CPU.
+
+            Compositor-agnostic and GPU-agnostic. No desktop is composed here: the
+            consuming pod nests one into the parent this candy supplies (KDE Plasma
+            via pod-kde-nested in pod-kde-cstream). The render node is the
+            deployment's CSTREAM_RENDER_NODE, else charly's injected DRINODE, and its
+            kernel driver picks the encoder (NVENC through CUDA on nvidia, VA-API on
+            amdgpu/i915/xe).
         require:
             # WP6: the audio substrate. A streamed desktop has no sound card, so
             # the endpoints below are virtual -- but something has to run PipeWire
             # to instantiate them, and pod-pipewire is that (daemon + wireplumber
             # + pw-cli, service priority 5, which is already the slot the plan's
             # start chain reserves for it: dbus 2 -> pipewire 5 -> broker 8).
-            - '@github.com/opencharly/pod-pipewire:v2026.273.1856'
-            - '@github.com/opencharly/layer-supervisord:v2026.271.1817'
-            - '@github.com/opencharly/layer-gst-wayland-display:v2026.272.0141'
-            # pod-hyprland is deliberately NOT required here. It is composed by
-            # layer-cstream-desktop, whose own description says a metalayer's
-            # members "are what it IS" and warns that installing the same thing in
-            # two places gives "a consumer two places to look for the same
-            # behaviour". Pinning it here was that second place: nothing in this
-            # candy's plan uses Hyprland (measured -- the require line was the only
-            # reference in the whole manifest), and two pins on one candy is what
-            # produced `resolved to multiple versions` every time either moved.
-            #
-            # The direction also matters: the layer's rationale is that THIS pod
-            # supplies the parent display Hyprland nests into. Requiring the
-            # compositor from the parent states the dependency backwards.
+            - '@github.com/opencharly/pod-pipewire:v2026.314.0718'
+            - '@github.com/opencharly/layer-supervisord:v2026.314.0710'
+            - '@github.com/opencharly/layer-gst-wayland-display:v2026.328.1627'
+            # No desktop is required here: the composing pod nests one into the
+            # parent this candy supplies, so the dependency points from the desktop
+            # to the transport and never back.
         port:
             - 8080
         package:
@@ -72,13 +70,13 @@ cstream:
             #     1: Failed to find element factory with name 'pipewiresrc'
             #
             # and because the streamer IS the Wayland parent, that takes the WHOLE
-            # stack down: cstream-parent goes FATAL, cstream-hyprland restart-loops
+            # stack down: cstream-streamer goes FATAL, the nested desktop restart-loops
             # with no parent display, and the consumer-side frame probe then waits on
             # media that will never arrive. The blast radius of a missing audio
             # element is the entire session, not the audio.
             - gst-plugin-pipewire
         plan:
-            - run: build the gateway and the session leader from the pinned streamer
+            - run: build the gateway, the session leader, the streamer and cstream-input from the pinned charly-streamer
               command: |
                 set -e
                 set -o pipefail
@@ -97,31 +95,38 @@ cstream:
                 # The tarball is also pinned by exact SHA instead of cloned-then-checked-out.
                 # pipefail is required, or a refused curl is masked by a tar that exits 0.
                 mkdir -p src
-                curl -fsSL https://codeload.github.com/opencharly/charly-streamer/tar.gz/de1ff6f50fc775b0babfd23bd058fcf8f0c8f848 \
-                    | tar xz -C src --strip-components=1
+                # THE PIN, in ONE place, and ASSERTED below: the URL and the check read the same
+                # value, so moving the pin is a one-line change that cannot leave the two halves
+                # disagreeing (review Block 1 on opencharly/pod-cstream#23: the build used to read
+                # a committed tarball staged by a step labelled LOCAL-TEST-ONLY, and the check
+                # accepted any 40-hex string).
+                PIN=d72b448b12ecaf92214c82be437a3f9e93b375e0
+                curl -fsSL "https://codeload.github.com/opencharly/charly-streamer/tar.gz/${PIN}" \
+                  -o /tmp/charly-streamer-src.tar.gz
+                # Provenance: the commit this image is built from, read from the archive itself
+                # (git archive, which GitHub's codeload also uses, stamps it into the pax header
+                # as comment=<sha>), so a bed run can PROVE which source it tested.
+                mkdir -p /usr/local/share/cstream
+                # Every reader drains its input: the step runs under pipefail, and a reader
+                # that stops early (head -c, grep -m1) kills its writer with SIGPIPE (141).
+                c=$(gzip -dc /tmp/charly-streamer-src.tar.gz | { head -c 4096; cat > /dev/null; } | grep -a -o 'comment=[0-9a-f]\{40\}' | sed -n '1s/comment=//p')
+                test -n "$c"
+                # EQUALITY, not "some 40-hex string": a swapped archive with a valid-looking
+                # comment must fail here.
+                test "$c" = "$PIN"
+                echo "$c" > /usr/local/share/cstream/BUILD_COMMIT
+                tar xzf /tmp/charly-streamer-src.tar.gz -C src --strip-components=1
                 cd src
                 CGO_ENABLED=0 go build -o /usr/local/bin/cstream-gateway ./cmd/cstream-gateway
                 cargo build --release -p cstream-leader --bin cstream-leader
                 install -Dm755 target/release/cstream-leader /usr/local/bin/cstream-leader
-                cargo build --release -p cstream-streamer --bin cstream-streamer
+                cargo build --release -p cstream-streamer --bin cstream-streamer --bin cstream-input
                 install -Dm755 target/release/cstream-streamer /usr/local/bin/cstream-streamer
+                # The stream's own test client: a WebRTC viewer that drives the desktop
+                # through the control channel, used by the cstream: input methods.
+                install -Dm755 target/release/cstream-input /usr/local/bin/cstream-input
                 cd /
-                rm -rf /tmp/src /root/go /root/.cache/go-build /root/.cargo/registry /root/.cargo/git
-              run_as: root
-            - run: stage the Wayland parent
-              copy: etc/cstream-parent
-              to: /usr/local/bin/cstream-parent
-              mode: "0755"
-              run_as: root
-            - run: stage the streaming gate probes
-              copy: etc/stream-probe
-              to: /usr/local/bin/stream-probe
-              mode: "0755"
-              run_as: root
-            - run: stage the encoder probe
-              copy: etc/encoder-probe
-              to: /usr/local/bin/encoder-probe
-              mode: "0755"
+                rm -rf /tmp/src /tmp/charly-streamer-src.tar.gz /root/go /root/.cache/go-build /root/.cargo/registry /root/.cargo/git
               run_as: root
             # WP6: the two virtual endpoints PipeWire instantiates at start.
             # A drop-in rather than a whole pipewire.conf: replacing the shipped
@@ -131,20 +136,6 @@ cstream:
               copy: etc/pipewire-cstream.conf
               to: /etc/pipewire/pipewire.conf.d/50-cstream.conf
               mode: "0644"
-              run_as: root
-            - run: stage the login probe the bed drives
-              copy: etc/login-probe
-              to: /usr/local/bin/cstream-login-probe
-              mode: "0755"
-              run_as: root
-            # The CONSUMER-side probe. stream-probe reads the producer's own tap
-            # and wl: screenshot reads the compositor, so neither can fail on an
-            # encoding or transport defect -- which is exactly the class that hid
-            # the missing webrtcbin while every producer-side check passed.
-            - run: stage the frame probe that pulls back through the WebRTC track
-              copy: etc/cstream-frame-probe
-              to: /usr/local/bin/cstream-frame-probe
-              mode: "0755"
               run_as: root
             - run: stage the streamer's own PAM service
               copy: etc/pam-cstream
@@ -367,8 +358,8 @@ cstream:
                 #
                 # Worse than the webrtcbin case, because this one is not a WARN. The
                 # streamer fails to build its graph and EXITS, and the streamer IS the
-                # Wayland parent, so the whole session goes with it: cstream-parent
-                # FATAL, cstream-hyprland restart-looping, the frame probe hanging on
+                # Wayland parent, so the whole session goes with it: cstream-streamer
+                # FATAL, the nested desktop restart-looping, the frame probe hanging on
                 # media that never comes. An 11-minute bed hang, from one absent package.
                 #
                 # Checked at IMAGE level so a composition mistake fails at build rather
@@ -376,73 +367,23 @@ cstream:
                 gst-inspect-1.0 pipewiresrc >/dev/null 2>&1 && echo PIPEWIRESRC-OK
               stdout:
                 - contains: PIPEWIRESRC-OK
-            # WP4 resize. Each resize is paired with an OBSERVATION on the nested
-            # compositor, because the socket reply only proves the streamer applied
-            # new caps -- it says nothing about whether the compositor reconfigured
-            # its output. Aquamarine snaps an unsatisfiable configure to 1280x720
-            # in SILENCE, so "no error" is not evidence here.
-            #
-            # 1600x900 is asserted as 1600x896: Geometry::sanitised rounds to a
-            # multiple of 8 and 900 is not one. The plan's own WP4 gate lists the
-            # requested 900, which cannot apply -- a gate asserting it would fail
-            # against correct behaviour.
-            - check: WP4 the control socket applies a resize and REPORTS what it applied
-              id: cstream-resize-applies
+            # WP4 resize, read-only. Resizing CHANGES the deployment (every viewer's desktop
+            # follows it), so the resize scenario -- a matrix of sizes, each observed in the
+            # stream, the nested desktop and the pointer -- lives in the consuming pods'
+            # disposable beds as `run:` steps (pod-kde-cstream: check-kde-cstream-pod), never
+            # in this baked plan, which `charly check live` runs against real deployments.
+            # What a live deployment CAN prove without changing anything: the control socket
+            # is served and reports the size the stream carries.
+            - check: WP4 the control socket is served and reports the stream's current size
+              id: cstream-control-geometry
               context:
                 - runtime
               exit_status: 0
               command:
                   in_container: true
-                  command: |
-                      printf 'resize 1600 900\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock
+                  command: printf 'geometry\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock
               stdout:
-                - contains: "OK resize 1600x896"
-            - check: WP4 the nested compositor really reconfigured to the applied size
-              id: cstream-resize-observed
-              context:
-                - runtime
-              wl:
-                method: hypr-monitors
-              stdout:
-                # BOTH dimensions. "1600" alone could match a coordinate or a
-                # refresh rate; 896 is the distinctive value -- it is the ROUNDED
-                # height, so asserting it proves the round-to-8 reached the
-                # compositor rather than stopping at the capsfilter.
-                - contains: "\"width\": 1600"
-                - contains: "\"height\": 896"
-            - check: WP4 a second distinct size applies, so the first was not a coincidence
-              id: cstream-resize-small
-              context:
-                - runtime
-              exit_status: 0
-              # `eventually:` + `retry_interval:` are charly's OWN retry modifiers --
-              # the same pair the cross-deployment-probing reference uses for cdp
-              # steps. This step previously hand-rolled the identical semantics in
-              # shell (a `for … seq` loop around the socat call, matching on the
-              # rate-limited reply). That was a reimplementation of an existing
-              # mechanism: R3.
-              #
-              # The retry is needed because the control socket rate-limits APPLIED
-              # resizes to 2/s, so a resize arriving too soon after the previous one
-              # is refused. Retrying is correct here and the bound keeps a genuinely
-              # dead socket failing rather than hanging.
-              eventually: 15s
-              retry_interval: 1s
-              command:
-                  in_container: true
-                  command: |
-                      printf 'resize 640 480\n' | timeout 10 socat - UNIX-CONNECT:/tmp/cstream-control.sock
-              stdout:
-                - contains: "OK resize 640x480"
-            - check: WP4 the compositor followed the second resize down
-              id: cstream-resize-small-observed
-              context:
-                - runtime
-              wl:
-                method: hypr-monitors
-              stdout:
-                - contains: "\"width\": 640"
-                - contains: "\"height\": 480"
+                - matches: '(?m)^OK geometry [0-9]+x[0-9]+@[0-9]+$'
             - check: "the streamer has its OWN PAM service, not a borrowed login stack"
               id: cstream-pam-service
               exit_status: 0
@@ -464,17 +405,58 @@ cstream:
                 echo PAM-STACK-OK
               stdout:
                 - contains: PAM-STACK-OK
-            - check: the streaming probes are installed
+            - check: the image records the charly-streamer commit it was built from
+              id: cstream-build-commit
+              exit_status: 0
+              command: cat /usr/local/share/cstream/BUILD_COMMIT
+              stdout:
+                - matches: '(?m)^d72b448b12ecaf92214c82be437a3f9e93b375e0$'
+            # R7 for this PR's headline behaviour: the render node comes from ONE variable
+            # (CSTREAM_RENDER_NODE, else charly's injected DRINODE) and NO literal survives in the
+            # image. Fails without the change: before it, both services declared
+            # `CSTREAM_RENDER_NODE: /dev/dri/renderD128`, so this string appears in the supervisor
+            # conf. The release binaries carry no such literal (the only occurrence in the source is
+            # inside a `#[cfg(test)]` fixture), so a hit here can only come from baked config.
+            - check: no render-node literal is baked -- the node comes from CSTREAM_RENDER_NODE, else DRINODE
+              id: cstream-no-render-node-literal
+              exit_status: 0
+              command: |
+                set -e
+                if grep -aq 'renderD128' /etc/supervisor.d/cstream.conf /usr/local/bin/cstream-streamer /usr/local/bin/cstream-gateway 2>/dev/null; then
+                  echo "RENDER-NODE-LITERAL-BAKED"
+                  exit 1
+                fi
+                echo NO-RENDER-NODE-LITERAL
+              stdout:
+                - contains: NO-RENDER-NODE-LITERAL
+            - check: the stream input tool is installed (cstream-input ships with the streamer)
               id: cstream-probes-installed
               exit_status: 0
-              command: test -x /usr/local/bin/stream-probe && test -x /usr/local/bin/encoder-probe && test -x /usr/local/bin/cstream-login-probe && test -x /usr/local/bin/cstream-frame-probe && echo PROBES-OK
+              command: test -x /usr/local/bin/cstream-input && echo PROBES-OK
               stdout:
                 - contains: PROBES-OK
+            - check: the streamer OPENED a hardware encoder, by its own report -- never the silent CPU fallback
+              id: cstream-hardware-encoder
+              context:
+                - runtime
+              exit_status: 0
+              eventually: 60s
+              retry_interval: 3s
+              command:
+                  in_container: true
+                  command: cat /tmp/cstream-rt/cstream-streamer.json
+              stdout:
+                - contains: '"encoder":"hardware:'
+        env_accept:
+            - name: CSTREAM_RENDER_NODE
+              description: "The /dev/dri/renderD* node to composite and encode on. Default: charly's DRINODE"
+            - name: CSTREAM_ENCODE
+              description: "auto (hardware, else software), hardware (fail rather than fall back) or software. Default: auto"
+            - name: CSTREAM_LOCK_AFTER
+              description: "Seconds with no viewer after which the desktop is locked (org.freedesktop.ScreenSaver.Lock). Default: off"
         service:
-            - name: cstream-parent
-              # The STREAMER is the Wayland parent -- the name is kept so consumers
-              # and checks that wait on `cstream-parent` keep working, but what runs
-              # is the streamer itself.
+            - name: cstream-streamer
+              # The STREAMER is the Wayland parent.
               #
               # waylanddisplaysrc creates a compositor and holds the render node, so
               # nothing else can observe this display: a second one negotiates
@@ -486,6 +468,18 @@ cstream:
               # CSTREAM_FRAME_DIR turns on the tap the frame-content gate reads, so
               # this one pipeline provides what two used to.
               exec: /usr/local/bin/cstream-streamer
+              # CAPTURE ITS OWN OUTPUT. Measured 2026-11-24: the streamer is re-spawned ~1
+              # minute into a browser session (supervisord escalated it to FATAL in one run)
+              # and NOTHING recorded why -- `supervisorctl tail cstream-streamer stderr`
+              # answers "ERROR (no log file)", and its stdout carried no FATAL at all. A
+              # service that discards its own crash output turns a one-line bug into four bed
+              # iterations of symptoms (opencharly/pod-kde-cstream#2).
+              # NOT under /tmp/cstream-rt/: that directory is created BY THE STREAMER
+              # (prepare_runtime_dir) after supervisord has already started it, so a log
+              # path there is a chicken-and-egg — supervisord cannot open the file, the
+              # container exits, and `charly check live` reports "container … is not
+              # running" (measured 2026-11-24, run 2026.327.2329). /tmp always exists.
+              stdout: /tmp/cstream-streamer.out
               env:
                 XDG_RUNTIME_DIR: /tmp/cstream-rt
                 # PipeWire lives in a DIFFERENT runtime dir, and both are correct.
@@ -510,11 +504,10 @@ cstream:
                 # what the cstream-audio-monitor-captured gate below asserts.
                 CSTREAM_AUDIO: "on"
                 CSTREAM_ENCODE: auto
-                CSTREAM_RENDER_NODE: /dev/dri/renderD128
                 CSTREAM_FRAME_DIR: /tmp/cstream-frames
-                # WP5: with no viewer for this long the desktop locks itself. The plan's
-                # own manual end-to-end expects a lock ~10s after disconnect.
-                CSTREAM_LOCK_AFTER: "10"
+                # No CSTREAM_RENDER_NODE here: the deployment's own value wins, else
+                # the streamer takes charly's injected DRINODE. No CSTREAM_LOCK_AFTER
+                # either: locking a session is the deployment's decision (env_accept).
               restart: always
               priority: 10
               start_sec: 2
@@ -525,7 +518,6 @@ cstream:
               env:
                 XDG_RUNTIME_DIR: /tmp/cstream-rt
                 WAYLAND_DISPLAY: wayland-1
-                CSTREAM_RENDER_NODE: /dev/dri/renderD128
               restart: always
               priority: 18
               start_sec: 2
