@@ -411,6 +411,24 @@ cstream:
               command: cat /usr/local/share/cstream/BUILD_COMMIT
               stdout:
                 - matches: '(?m)^d72b448b12ecaf92214c82be437a3f9e93b375e0$'
+            # R7 for this PR's headline behaviour: the render node comes from ONE variable
+            # (CSTREAM_RENDER_NODE, else charly's injected DRINODE) and NO literal survives in the
+            # image. Fails without the change: before it, both services declared
+            # `CSTREAM_RENDER_NODE: /dev/dri/renderD128`, so this string appears in the supervisor
+            # conf. The release binaries carry no such literal (the only occurrence in the source is
+            # inside a `#[cfg(test)]` fixture), so a hit here can only come from baked config.
+            - check: no render-node literal is baked -- the node comes from CSTREAM_RENDER_NODE, else DRINODE
+              id: cstream-no-render-node-literal
+              exit_status: 0
+              command: |
+                set -e
+                if grep -aq 'renderD128' /etc/supervisor.d/cstream.conf /usr/local/bin/cstream-streamer /usr/local/bin/cstream-gateway 2>/dev/null; then
+                  echo "RENDER-NODE-LITERAL-BAKED"
+                  exit 1
+                fi
+                echo NO-RENDER-NODE-LITERAL
+              stdout:
+                - contains: NO-RENDER-NODE-LITERAL
             - check: the stream input tool is installed (cstream-input ships with the streamer)
               id: cstream-probes-installed
               exit_status: 0
